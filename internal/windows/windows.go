@@ -36,13 +36,68 @@ const userOwnerAndGroupSID = "AQAAgBQAAAAkAAAAAAAAAAAAAAABAgAAAAAABSAAAAAhAgAAAQ
 
 // Windows returns a Layer that is converted to be pullable on Windows.
 func Windows(layer v1.Layer) (v1.Layer, error) {
-	// TODO: do this lazily.
 
+	//Perform a check to see if the layer coming in is already a windows pullable container
+	isLayerWindowsPullable, err := checkLayerWindowsPullable(layer)
+
+	if err != nil {
+		return nil, err
+	}
+
+	//If the Layer is windows pullable then return the layer with no change
+	if isLayerWindowsPullable {
+		return layer, nil
+	}
+
+	return createWindowsLayerFromTarball(layer)
+
+}
+
+func checkLayerWindowsPullable(layer v1.Layer) (bool, error) {
+
+	// Uncompress the layer
+	layerReader, err := layer.Uncompressed()
+	if err != nil {
+		return false, fmt.Errorf("getting layer: %w", err)
+	}
+	defer layerReader.Close()
+
+	// Read the layer as a tarReader
+	tarReader := tar.NewReader(layerReader)
+
+	//Loop through the files of the tar
+	for {
+		header, err := tarReader.Next()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+
+		if err != nil {
+			return false, fmt.Errorf("reading layer: %w", err)
+		}
+
+		//Look for a root folder called Files in the layer
+		if header.Name == "Files" {
+			//If the header properties match then this layer is a pullable windows layer
+			if header.Typeflag == tar.TypeDir && header.Mode == 0555 && header.Format == tar.FormatPAX {
+				return true, nil
+			}
+		}
+
+	}
+
+	//Return false if the checks have failed
+	return false, nil
+}
+
+func createWindowsLayerFromTarball(layer v1.Layer) (v1.Layer, error) {
+	// TODO: do this lazily.
 	layerReader, err := layer.Uncompressed()
 	if err != nil {
 		return nil, fmt.Errorf("getting layer: %w", err)
 	}
 	defer layerReader.Close()
+
 	tarReader := tar.NewReader(layerReader)
 	w := new(bytes.Buffer)
 	tarWriter := tar.NewWriter(w)
@@ -67,12 +122,17 @@ func Windows(layer v1.Layer) (v1.Layer, error) {
 		if errors.Is(err, io.EOF) {
 			break
 		}
+
 		if err != nil {
 			return nil, fmt.Errorf("reading layer: %w", err)
 		}
 
+		//If the tar contains a folder with Files in the root then it must be already set up as a windows pullable layer
+		// return the layer we got in
 		if strings.HasPrefix(header.Name, "Files/") {
-			return nil, fmt.Errorf("file path %q already suitable for Windows", header.Name)
+
+			//return nil, fmt.Errorf("file path %q already suitable for Windows", header.Name)
+			return layer, nil
 		}
 
 		header.Name = path.Join("Files", header.Name)
